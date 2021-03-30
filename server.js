@@ -5,38 +5,63 @@ require('dotenv').config();
 
 // Application Dependencies
 const express = require('express');
+const superagent = require('superagent');
+const pg = require('pg');
 const cors = require('cors');
 
 // Application Setup
 const PORT = process.env.PORT;
+const GEO_CODE_API_KEY = process.env.GEO_CODE_API_KEY;
+const DATABASE_URL = process.env.DATABASE_URL;
+
 const app = express();
 app.use(cors());
 
+// Database Connection Setup
+const client = new pg.Client(DATABASE_URL);
+
 // routes
-app.get('/location', handelLocationRequest);
-app.get('/weather', handelWeatherRequest);
+app.get('/location', handleLocationRequest);
+app.get('/', (request, response) => { response.status(200).send('ok'); });
+app.use('*', notFoundHandler);
 
 
-const errorMessage = {
-    status: 500,
-    responseText: "Sorry, something went wrong"
-};
-
-function handelLocationRequest(req, res) {
-    const searchQuery = req.query.city;
-    if (searchQuery !== 'Lynnwood') {
-        res.send(errorMessage);
-    } else {
-        const locationsRawData = require('./data/location.json');
-        const location = new Location(locationsRawData[0], searchQuery);
-        res.send(location);
+function handleLocationRequest(req, res) {
+    const cityName = req.query.city;
+    const url = `https://us1.locationiq.com/v1/search.php?key=${GEO_CODE_API_KEY}&city=${cityName}&format=json`;
+    if (!cityName) {
+        res.status(404).send('no search query was provided');
     }
-}
 
-function handelWeatherRequest(req, res) {
-    const weatherRawData = require('./data/weather.json');
-    const weather = new Weather(weatherRawData);
-    res.send(weather);
+    // check if the city is exist in the city database
+    const safeValues = [cityName];
+    const sqlQuery = `SELECT * FROM location WHERE name=$1`;
+
+    // query the database
+    client.query(sqlQuery, safeValues).then(result => {
+        if (result.rows.length === 0) {
+            throw error;
+        }
+        res.status(200).json(result.rows[0]);
+    }).catch((error) => {
+        const cityQueryParam = {
+            key: GEO_CODE_API_KEY,
+            city: cityName,
+            format: 'json'
+        };
+
+        superagent.get(url).query(cityQueryParam).then(resData => {
+            const location = new Location(resData.body[0], cityName);
+            const safeValues = [cityName, location.formatted_query, location.latitude, location.longitude];
+            const sqlQuery = `INSERT INTO location(name, fullname, latitude, longitude) VALUES ($1, $2, $3, $4)`;
+            client.query(sqlQuery, safeValues);
+
+            res.status(200).send(location);
+        }).catch((error) => {
+            res.status(500).send('Sorry, something went wrong');
+        });
+    });
+
 }
 
 // constructors
@@ -47,11 +72,15 @@ function Location(data, query) {
     this.longitude = data.lon;
 }
 
-function Weather(weatherData) {
-    this.forecast = weatherData.data[0].weather.description;
-    this.time = weatherData.data[0].datetime;
+
+function notFoundHandler(request, response) {
+    response.status(404).send('Not found!');
 }
 
-app.listen(PORT, () => {
-    console.log("hello");
-});
+// Connect to DB and Start the Web Server
+client.connect().then(() => {
+    app.listen(PORT, () => {
+        console.log("Connected to database:", client.connectionParameters.database) //show what database we connected to
+        console.log('Server up on', PORT);
+    });
+})
