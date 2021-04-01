@@ -18,7 +18,12 @@ const app = express();
 app.use(cors());
 
 // Database Connection Setup
-const client = new pg.Client(DATABASE_URL);
+const client = new pg.Client({
+    connectionString: DATABASE_URL,
+    // ssl: {
+    //     rejectUnauthorized: false
+    // }
+});
 
 // routes
 app.get('/location', handleLocationRequest);
